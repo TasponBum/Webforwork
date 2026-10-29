@@ -3,6 +3,8 @@
 
 import { useState, type FormEvent } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { signInWithEmailAndPassword } from "firebase/auth";
 import {
   BookOpen,
   Eye,
@@ -10,17 +12,69 @@ import {
   Mail,
   LockKeyhole,
 } from "lucide-react";
+import { auth } from "@/lib/firebase";
 
 export default function LoginPage() {
+  const router = useRouter();
+
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [message, setMessage] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  function handleSubmit(e: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    setMessage("");
+    setLoading(true);
 
-    setMessage(
-      "หน้าจอพร้อมใช้งานแล้ว แต่ระบบเข้าสู่ระบบจริงยังไม่ได้เชื่อมต่อ"
-    );
+    try {
+      // ตรวจสอบอีเมลและรหัสผ่านกับ Firebase
+      await signInWithEmailAndPassword(
+        auth,
+        email.trim().toLowerCase(),
+        password
+      );
+
+      // เข้าสู่ระบบสำเร็จ ไปหน้าโปรไฟล์
+      router.replace("/profile");
+    } catch (error: unknown) {
+      const firebaseError = error as { code?: string };
+
+      switch (firebaseError.code) {
+        case "auth/invalid-credential":
+        case "auth/user-not-found":
+        case "auth/wrong-password":
+          setMessage("อีเมลหรือรหัสผ่านไม่ถูกต้อง");
+          break;
+
+        case "auth/invalid-email":
+          setMessage("รูปแบบอีเมลไม่ถูกต้อง");
+          break;
+
+        case "auth/user-disabled":
+          setMessage("บัญชีนี้ถูกปิดใช้งาน");
+          break;
+
+        case "auth/too-many-requests":
+          setMessage(
+            "มีการเข้าสู่ระบบผิดพลาดหลายครั้ง กรุณาลองใหม่ภายหลัง"
+          );
+          break;
+
+        case "auth/network-request-failed":
+          setMessage("เชื่อมต่อไม่ได้ กรุณาตรวจสอบอินเทอร์เน็ต");
+          break;
+
+        default:
+          console.error("Firebase login error:", error);
+          setMessage(
+            "เข้าสู่ระบบไม่สำเร็จ กรุณาตรวจสอบการตั้งค่า Firebase"
+          );
+      }
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -51,6 +105,7 @@ export default function LoginPage() {
             <h2 className="text-2xl font-bold text-gray-900">
               ยินดีต้อนรับกลับ!
             </h2>
+
             <p className="mt-2 text-sm text-gray-500">
               เข้าสู่ระบบเพื่อจัดการงานเรียนของคุณ
             </p>
@@ -76,6 +131,8 @@ export default function LoginPage() {
                   id="email"
                   name="email"
                   type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
                   placeholder="you@example.com"
                   autoComplete="email"
                   required
@@ -103,6 +160,8 @@ export default function LoginPage() {
                   id="password"
                   name="password"
                   type={showPassword ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
                   placeholder="กรอกรหัสผ่าน"
                   autoComplete="current-password"
                   required
@@ -113,9 +172,7 @@ export default function LoginPage() {
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
                   aria-label={
-                    showPassword
-                      ? "ซ่อนรหัสผ่าน"
-                      : "แสดงรหัสผ่าน"
+                    showPassword ? "ซ่อนรหัสผ่าน" : "แสดงรหัสผ่าน"
                   }
                   className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
                 >
@@ -131,15 +188,16 @@ export default function LoginPage() {
             {/* Submit */}
             <button
               type="submit"
-              className="w-full rounded-xl bg-blue-600 py-3.5 text-sm font-semibold text-white shadow-lg shadow-blue-200 transition hover:bg-blue-700 active:scale-[0.99]"
+              disabled={loading}
+              className="w-full rounded-xl bg-blue-600 py-3.5 text-sm font-semibold text-white shadow-lg shadow-blue-200 transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              เข้าสู่ระบบ
+              {loading ? "กำลังเข้าสู่ระบบ..." : "เข้าสู่ระบบ"}
             </button>
 
             {message && (
               <p
-                role="status"
-                className="rounded-xl bg-blue-50 p-3 text-sm leading-6 text-blue-700"
+                role="alert"
+                className="rounded-xl bg-red-50 p-3 text-sm leading-6 text-red-700"
               >
                 {message}
               </p>
