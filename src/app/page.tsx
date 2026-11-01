@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useEffect, useState } from "react";
@@ -11,24 +12,82 @@ import TaskCalendar from "@/components/studymate/TaskCalendar";
 import type { Task } from "@/types/task";
 import type { Subject } from "@/types/subject";
 
-import { auth, db } from "@/lib/firebase";
+import { auth } from "@/lib/firebase";
 import { onAuthStateChanged, type User } from "firebase/auth";
 
-import {
-  collection,
-  deleteDoc,
-  doc,
-  onSnapshot,
-  setDoc,
-  updateDoc,
-} from "firebase/firestore";
-
 type Priority = "low" | "medium" | "high";
+type ApiMethod = "GET" | "POST" | "PATCH" | "DELETE";
+
+type ApiResponse<T> = {
+  success: boolean;
+  message?: string;
+} & T;
+
+// ---------------------------------
+// ฟังก์ชันกลางสำหรับเรียก Back-end API
+// ---------------------------------
+
+async function callApi<T>(
+  user: User,
+  url: string,
+  method: ApiMethod,
+  body?: unknown,
+  signal?: AbortSignal
+): Promise<ApiResponse<T>> {
+  // ขอ Firebase ID Token
+  const token = await user.getIdToken();
+
+  // ส่ง Request ไปยัง Back-end
+  const response = await fetch(url, {
+    method,
+
+    headers: {
+      Authorization: `Bearer ${token}`,
+
+      ...(body !== undefined
+        ? { "Content-Type": "application/json" }
+        : {}),
+    },
+
+    ...(body !== undefined
+      ? { body: JSON.stringify(body) }
+      : {}),
+
+    cache: "no-store",
+    signal,
+  });
+
+  // อ่าน Response
+  let result: ApiResponse<T>;
+
+  try {
+    result = (await response.json()) as ApiResponse<T>;
+  } catch {
+    throw new Error("ไม่สามารถอ่านข้อมูลจากเซิร์ฟเวอร์ได้");
+  }
+
+  if (!result || typeof result !== "object") {
+    throw new Error("รูปแบบข้อมูลจากเซิร์ฟเวอร์ไม่ถูกต้อง");
+  }
+
+  if (!response.ok || result.success !== true) {
+    throw new Error(
+      result.message || "เกิดข้อผิดพลาดในการเรียก API"
+    );
+  }
+
+  return result;
+}
+
+// ---------------------------------
+// Dashboard
+// ---------------------------------
 
 export default function Home() {
   const router = useRouter();
 
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
+
   const [tasks, setTasks] = useState<Task[]>([]);
   const [subjects, setSubjects] = useState<Subject[]>([]);
 
@@ -36,140 +95,133 @@ export default function Home() {
   const [tasksLoading, setTasksLoading] = useState(true);
   const [dataError, setDataError] = useState("");
 
-  // โหลดงานและวิชาของบัญชีที่เข้าสู่ระบบ
+  // ---------------------------------
+  // ตรวจสอบ Login และโหลดข้อมูล
+  // ---------------------------------
+
   useEffect(() => {
-    let unsubscribeTasks: (() => void) | undefined;
-    let unsubscribeSubjects: (() => void) | undefined;
+    let controller: AbortController | undefined;
 
     const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
-      unsubscribeTasks?.();
-      unsubscribeSubjects?.();
-
-      unsubscribeTasks = undefined;
-      unsubscribeSubjects = undefined;
+      // ยกเลิก Request เก่าของบัญชีก่อนหน้า
+      controller?.abort();
+      controller = undefined;
 
       setAuthReady(true);
 
+      // กรณียังไม่ได้ Login
       if (!user) {
         setFirebaseUser(null);
         setTasks([]);
         setSubjects([]);
         setTasksLoading(false);
+        setDataError("");
 
         router.replace("/login");
         return;
       }
 
-      setFirebaseUser(user);
+      const currentUser = user;
+
+      setFirebaseUser(currentUser);
       setTasks([]);
       setSubjects([]);
       setTasksLoading(true);
       setDataError("");
 
-      // โหลดงานจาก users/{uid}/tasks
-      unsubscribeTasks = onSnapshot(
-        collection(db, "users", user.uid, "tasks"),
-        (snapshot) => {
-          const loadedTasks: Task[] = snapshot.docs.map(
-            (taskDocument) => {
-              const data = taskDocument.data();
+      const currentController = new AbortController();
+      controller = currentController;
 
-              const priority: Priority =
-                data.priority === "high"
-                  ? "high"
-                  : data.priority === "low"
-                    ? "low"
-                    : "medium";
+      // ---------------------------------
+      // GET: โหลด Tasks
+      // ---------------------------------
 
-              return {
-                id: taskDocument.id,
-                title:
-                  typeof data.title === "string"
-                    ? data.title
-                    : "",
-                description:
-                  typeof data.description === "string"
-                    ? data.description
-                    : "",
-                subject:
-                  typeof data.subject === "string"
-                    ? data.subject
-                    : "ทั่วไป",
-                dueDate:
-                  typeof data.dueDate === "string"
-                    ? data.dueDate
-                    : "",
-                priority,
-                completed: data.completed === true,
-                createdAt:
-                  typeof data.createdAt === "string"
-                    ? data.createdAt
-                    : "",
-              };
-            }
+      async function loadTasks() {
+        try {
+          const result = await callApi<{
+            tasks: Task[];
+          }>(
+            currentUser,
+            "/api/tasks",
+            "GET",
+            undefined,
+            currentController.signal
           );
 
-          loadedTasks.sort((a, b) =>
-            b.createdAt.localeCompare(a.createdAt)
-          );
+          if (!Array.isArray(result.tasks)) {
+            throw new Error("ข้อมูลรายการงานไม่ถูกต้อง");
+          }
 
-          setTasks(loadedTasks);
-          setTasksLoading(false);
-        },
-        (error) => {
+          if (!currentController.signal.aborted) {
+            setTasks(result.tasks);
+            setTasksLoading(false);
+          }
+        } catch (error) {
+          if (currentController.signal.aborted) return;
+
           console.error("Load tasks error:", error);
+
           setDataError(
-            "โหลดงานไม่สำเร็จ กรุณาตรวจสอบ Firestore Rules"
+            error instanceof Error
+              ? error.message
+              : "โหลดงานไม่สำเร็จ กรุณาลองใหม่"
           );
+
           setTasksLoading(false);
         }
-      );
+      }
 
-      // โหลดวิชาจาก users/{uid}/subjects
-      unsubscribeSubjects = onSnapshot(
-        collection(db, "users", user.uid, "subjects"),
-        (snapshot) => {
-          const loadedSubjects: Subject[] = snapshot.docs
-            .map((subjectDocument) => {
-              const data = subjectDocument.data();
+      // ---------------------------------
+      // GET: โหลด Subjects
+      // ---------------------------------
 
-              return {
-                id: subjectDocument.id,
-                name:
-                  typeof data.name === "string"
-                    ? data.name
-                    : "",
-                createdAt:
-                  typeof data.createdAt === "string"
-                    ? data.createdAt
-                    : "",
-              };
-            })
-            .filter((subject) => subject.name.trim() !== "");
-
-          loadedSubjects.sort((a, b) =>
-            a.name.localeCompare(b.name)
+      async function loadSubjects() {
+        try {
+          const result = await callApi<{
+            subjects: Subject[];
+          }>(
+            currentUser,
+            "/api/subjects",
+            "GET",
+            undefined,
+            currentController.signal
           );
 
-          setSubjects(loadedSubjects);
-        },
-        (error) => {
+          if (!Array.isArray(result.subjects)) {
+            throw new Error("ข้อมูลวิชาเรียนไม่ถูกต้อง");
+          }
+
+          if (!currentController.signal.aborted) {
+            setSubjects(result.subjects);
+          }
+        } catch (error) {
+          if (currentController.signal.aborted) return;
+
           console.error("Load subjects error:", error);
+
           setDataError(
-            "โหลดวิชาเรียนไม่สำเร็จ กรุณาตรวจสอบ Firestore Rules"
+            error instanceof Error
+              ? error.message
+              : "โหลดวิชาเรียนไม่สำเร็จ กรุณาลองใหม่"
           );
         }
-      );
+      }
+
+      // เริ่มโหลดข้อมูลทั้งสองส่วน
+      void loadTasks();
+      void loadSubjects();
     });
 
     return () => {
       unsubscribeAuth();
-      unsubscribeTasks?.();
-      unsubscribeSubjects?.();
+      controller?.abort();
     };
   }, [router]);
 
-  // เพิ่มงานลง Firestore
+  // ---------------------------------
+  // POST: เพิ่มงาน
+  // ---------------------------------
+
   async function handleAddTask(
     title: string,
     subject: string,
@@ -178,31 +230,43 @@ export default function Home() {
   ) {
     if (!firebaseUser) return;
 
-    const newTask: Task = {
-      id: crypto.randomUUID(),
-      title,
-      description: "",
-      subject: subject.trim() || "ทั่วไป",
-      dueDate,
-      priority,
-      completed: false,
-      createdAt: new Date().toISOString().slice(0, 10),
-    };
-
     try {
-      await setDoc(
-        doc(db, "users", firebaseUser.uid, "tasks", newTask.id),
-        newTask
+      const result = await callApi<{
+        task: Task;
+      }>(
+        firebaseUser,
+        "/api/tasks",
+        "POST",
+        {
+          title,
+          description: "",
+          subject: subject.trim() || "ทั่วไป",
+          dueDate,
+          priority,
+        }
       );
+
+      setTasks((currentTasks) => [
+        result.task,
+        ...currentTasks,
+      ]);
 
       setDataError("");
     } catch (error) {
       console.error("Add task error:", error);
-      setDataError("เพิ่มงานไม่สำเร็จ กรุณาลองใหม่");
+
+      setDataError(
+        error instanceof Error
+          ? error.message
+          : "เพิ่มงานไม่สำเร็จ กรุณาลองใหม่"
+      );
     }
   }
 
-  // เพิ่มวิชาเรียนลง Firestore
+  // ---------------------------------
+  // POST: เพิ่มวิชาเรียน
+  // ---------------------------------
+
   async function handleAddSubject(
     name: string
   ): Promise<boolean> {
@@ -215,6 +279,7 @@ export default function Home() {
       return false;
     }
 
+    // ตรวจสอบวิชาซ้ำใน Front-end
     const duplicate = subjects.some(
       (subject) =>
         subject.name.trim().toLowerCase() ===
@@ -229,69 +294,115 @@ export default function Home() {
     }
 
     try {
-      const id = crypto.randomUUID();
+      const result = await callApi<{
+        subject: Subject;
+      }>(
+        firebaseUser,
+        "/api/subjects",
+        "POST",
+        {
+          name: normalizedName,
+        }
+      );
 
-      const newSubject: Subject = {
-        id,
-        name: normalizedName,
-        createdAt: new Date().toISOString(),
-      };
-
-      await setDoc(
-        doc(db, "users", firebaseUser.uid, "subjects", id),
-        newSubject
+      setSubjects((currentSubjects) =>
+        [...currentSubjects, result.subject].sort(
+          (a, b) => a.name.localeCompare(b.name)
+        )
       );
 
       setDataError("");
       return true;
     } catch (error) {
       console.error("Add subject error:", error);
+
       setDataError(
-        "เพิ่มวิชาเรียนไม่สำเร็จ กรุณาตรวจสอบ Firestore Rules"
+        error instanceof Error
+          ? error.message
+          : "เพิ่มวิชาเรียนไม่สำเร็จ กรุณาลองใหม่"
       );
+
       return false;
     }
   }
 
-  // เปลี่ยนสถานะงาน
+  // ---------------------------------
+  // PATCH: เปลี่ยนสถานะงาน
+  // ---------------------------------
+
   async function handleToggleTask(id: string) {
     if (!firebaseUser) return;
 
     const task = tasks.find((item) => item.id === id);
+
     if (!task) return;
 
     try {
-      await updateDoc(
-        doc(db, "users", firebaseUser.uid, "tasks", id),
-        { completed: !task.completed }
+      const result = await callApi<{
+        task: Task;
+      }>(
+        firebaseUser,
+        `/api/tasks/${encodeURIComponent(id)}`,
+        "PATCH",
+        {
+          completed: !task.completed,
+        }
+      );
+
+      setTasks((currentTasks) =>
+        currentTasks.map((item) =>
+          item.id === id ? result.task : item
+        )
       );
 
       setDataError("");
     } catch (error) {
       console.error("Toggle task error:", error);
+
       setDataError(
-        "เปลี่ยนสถานะงานไม่สำเร็จ กรุณาลองใหม่"
+        error instanceof Error
+          ? error.message
+          : "เปลี่ยนสถานะงานไม่สำเร็จ กรุณาลองใหม่"
       );
     }
   }
 
-  // ลบงาน
+  // ---------------------------------
+  // DELETE: ลบงาน
+  // ---------------------------------
+
   async function handleDeleteTask(id: string) {
     if (!firebaseUser) return;
 
     try {
-      await deleteDoc(
-        doc(db, "users", firebaseUser.uid, "tasks", id)
+      await callApi<{
+        id: string;
+      }>(
+        firebaseUser,
+        `/api/tasks/${encodeURIComponent(id)}`,
+        "DELETE"
+      );
+
+      setTasks((currentTasks) =>
+        currentTasks.filter((item) => item.id !== id)
       );
 
       setDataError("");
     } catch (error) {
       console.error("Delete task error:", error);
-      setDataError("ลบงานไม่สำเร็จ กรุณาลองใหม่");
+
+      setDataError(
+        error instanceof Error
+          ? error.message
+          : "ลบงานไม่สำเร็จ กรุณาลองใหม่"
+      );
     }
   }
 
-  // แก้ไขงาน
+  // ---------------------------------
+  // PATCH: แก้ไขงาน
+  // ---------------------------------
+
   async function handleEditTask(
     id: string,
     title: string,
@@ -302,8 +413,12 @@ export default function Home() {
     if (!firebaseUser) return false;
 
     try {
-      await updateDoc(
-        doc(db, "users", firebaseUser.uid, "tasks", id),
+      const result = await callApi<{
+        task: Task;
+      }>(
+        firebaseUser,
+        `/api/tasks/${encodeURIComponent(id)}`,
+        "PATCH",
         {
           title,
           subject,
@@ -312,16 +427,31 @@ export default function Home() {
         }
       );
 
+      setTasks((currentTasks) =>
+        currentTasks.map((item) =>
+          item.id === id ? result.task : item
+        )
+      );
+
       setDataError("");
       return true;
     } catch (error) {
       console.error("Edit task error:", error);
-      setDataError("แก้ไขงานไม่สำเร็จ กรุณาลองใหม่");
+
+      setDataError(
+        error instanceof Error
+          ? error.message
+          : "แก้ไขงานไม่สำเร็จ กรุณาลองใหม่"
+      );
+
       return false;
     }
   }
 
-  // หน้ารอโหลดข้อมูล
+  // ---------------------------------
+  // Loading Screen
+  // ---------------------------------
+
   if (!authReady || !firebaseUser || tasksLoading) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-gray-50">
@@ -332,7 +462,10 @@ export default function Home() {
     );
   }
 
-  // หน้า Dashboard ที่ไม่มี Sidebar
+  // ---------------------------------
+  // Dashboard UI
+  // ---------------------------------
+
   return (
     <main className="min-h-screen bg-gray-50">
       <Header />

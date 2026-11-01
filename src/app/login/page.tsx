@@ -37,7 +37,7 @@ export default function LoginPage() {
       );
 
       // เข้าสู่ระบบสำเร็จ ไปหน้าโปรไฟล์
-      router.replace("/profile");
+      router.replace("/");
     } catch (error: unknown) {
       const firebaseError = error as { code?: string };
 

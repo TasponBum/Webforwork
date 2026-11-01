@@ -1,18 +1,10 @@
+
 "use client";
 
 import { useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import {
-  createUserWithEmailAndPassword,
-  updateProfile,
-  signOut,
-} from "firebase/auth";
-import {
-  doc,
-  setDoc,
-  serverTimestamp,
-} from "firebase/firestore";
+
 import {
   BookOpen,
   Eye,
@@ -21,46 +13,84 @@ import {
   LockKeyhole,
   UserRound,
 } from "lucide-react";
-import { auth, db } from "@/lib/firebase";
+
+// ---------------------------------
+// Register API Response
+// ---------------------------------
+
+type RegisterResponse = {
+  success: boolean;
+  message?: string;
+  user?: {
+    uid: string;
+    name: string | null;
+    email: string | null;
+  };
+};
+
+// ---------------------------------
+// Register Page
+// ---------------------------------
 
 export default function RegisterPage() {
   const router = useRouter();
 
   const [loading, setLoading] = useState(false);
+
   const [showPassword, setShowPassword] = useState(false);
+
   const [showConfirmPassword, setShowConfirmPassword] =
     useState(false);
-  const [message, setMessage] = useState("");
-  const [messageType, setMessageType] = useState<"success" | "error">(
-    "success"
-  );
 
-  async function handleSubmit(e: FormEvent<HTMLFormElement>) {
+  const [message, setMessage] = useState("");
+
+  const [messageType, setMessageType] = useState<
+    "success" | "error"
+  >("success");
+
+  // ---------------------------------
+  // POST: สมัครสมาชิกผ่าน Back-end API
+  // ---------------------------------
+
+  async function handleSubmit(
+    e: FormEvent<HTMLFormElement>
+  ) {
     e.preventDefault();
     setMessage("");
 
     const formData = new FormData(e.currentTarget);
-    const name = String(formData.get("name") ?? "").trim();
-    const email = String(formData.get("email") ?? "")
-      .trim()
-      .toLowerCase();
-    const password = String(formData.get("password") ?? "");
+
+    const name = String(
+      formData.get("name") ?? ""
+    ).trim();
+
+    const email = String(
+      formData.get("email") ?? ""
+    ).trim().toLowerCase();
+
+    const password = String(
+      formData.get("password") ?? ""
+    );
+
     const confirmPassword = String(
       formData.get("confirmPassword") ?? ""
     );
 
+    // ตรวจสอบชื่อและอีเมล
     if (!name || !email) {
       setMessageType("error");
       setMessage("กรุณากรอกชื่อและอีเมล");
       return;
     }
 
+    // ตรวจสอบความยาวรหัสผ่าน
     if (password.length < 6) {
       setMessageType("error");
       setMessage("รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร");
       return;
     }
 
+    // ตรวจสอบรหัสผ่านทั้งสองช่อง
     if (password !== confirmPassword) {
       setMessageType("error");
       setMessage("รหัสผ่านทั้งสองช่องไม่ตรงกัน");
@@ -70,95 +100,88 @@ export default function RegisterPage() {
     setLoading(true);
     setMessageType("error");
 
-    let accountCreated = false;
-    let profileSaved = false;
-
     try {
-      // 1. สร้างบัญชีใน Firebase Authentication
-      const credential = await createUserWithEmailAndPassword(
-        auth,
-        email,
-        password
-      );
-      accountCreated = true;
+      // ---------------------------------
+      // ส่งข้อมูลไปยัง Register API
+      // ---------------------------------
 
-      // 2. บันทึกชื่อที่ใช้แสดงใน Firebase Authentication
-      await updateProfile(credential.user, {
-        displayName: name,
+      const response = await fetch("/api/register", {
+        method: "POST",
+
+        headers: {
+          "Content-Type": "application/json",
+        },
+
+        body: JSON.stringify({
+          name,
+          email,
+          password,
+        }),
+
+        cache: "no-store",
       });
 
-      // 3. บันทึกข้อมูลโปรไฟล์ใน Cloud Firestore
-      await setDoc(doc(db, "users", credential.user.uid), {
-        uid: credential.user.uid,
-        name,
-        email,
-        major: "",
-        year: "",
-        bio: "",
-        createdAt: serverTimestamp(),
-      });
-      profileSaved = true;
+      // อ่าน Response จาก Back-end
+      let result: RegisterResponse;
 
-      // 4. ออกจากระบบ เพื่อให้ผู้ใช้เข้าสู่ระบบด้วยตนเอง
-      await signOut(auth);
-
-      // 5. ไปหน้าเข้าสู่ระบบเมื่อทุกขั้นตอนสำเร็จ
-      router.replace("/login?registered=1");
-    } catch (error: unknown) {
-      const firebaseError = error as { code?: string };
-      console.error("Firebase registration error:", error);
-
-      if (accountCreated && !profileSaved) {
-        setMessage(
-          "สร้างบัญชี Firebase แล้ว แต่บันทึกโปรไฟล์ไม่สำเร็จ กรุณาตรวจสอบ Firestore Database และ Rules ก่อนลองอีกครั้ง"
+      try {
+        result = (await response.json()) as RegisterResponse;
+      } catch {
+        throw new Error(
+          "ไม่สามารถอ่านข้อมูลจากเซิร์ฟเวอร์ได้"
         );
-      } else if (accountCreated && profileSaved) {
-        setMessageType("success");
-        setMessage(
-          "สมัครสมาชิกและบันทึกโปรไฟล์สำเร็จแล้ว แต่ระบบออกจากระบบอัตโนมัติไม่สำเร็จ คุณสามารถไปหน้าเข้าสู่ระบบได้"
-        );
-      } else {
-        switch (firebaseError.code) {
-          case "auth/email-already-in-use":
-            setMessage("อีเมลนี้มีบัญชีอยู่แล้ว กรุณาเข้าสู่ระบบแทน");
-            break;
-
-          case "auth/invalid-email":
-            setMessage("รูปแบบอีเมลไม่ถูกต้อง");
-            break;
-
-          case "auth/weak-password":
-            setMessage("รหัสผ่านไม่ปลอดภัยพอ กรุณาตั้งรหัสผ่านใหม่");
-            break;
-
-          case "auth/operation-not-allowed":
-            setMessage(
-              "กรุณาเปิดใช้งาน Email/Password ใน Firebase Authentication"
-            );
-            break;
-
-          case "auth/network-request-failed":
-            setMessage("เชื่อมต่อ Firebase ไม่สำเร็จ กรุณาตรวจสอบอินเทอร์เน็ต");
-            break;
-
-          case "permission-denied":
-            setMessage("บันทึกข้อมูลไม่ได้ กรุณาตรวจสอบ Firestore Rules");
-            break;
-
-          default:
-            setMessage(
-              "สมัครสมาชิกไม่สำเร็จ กรุณาตรวจสอบการตั้งค่า Firebase แล้วลองใหม่"
-            );
-        }
       }
+
+      // ตรวจสอบผลลัพธ์การสมัครสมาชิก
+      if (!response.ok || result.success !== true) {
+        setMessage(
+          result.message ||
+            "สมัครสมาชิกไม่สำเร็จ กรุณาลองใหม่"
+        );
+        return;
+      }
+
+      // ตรวจสอบข้อมูลบัญชีที่ได้รับกลับมา
+      if (!result.user?.uid) {
+        throw new Error(
+          "สมัครสมาชิกแล้ว แต่ไม่ได้รับข้อมูลบัญชีจากเซิร์ฟเวอร์"
+        );
+      }
+
+      // ---------------------------------
+      // สมัครสมาชิกสำเร็จ
+      // ---------------------------------
+
+      setMessageType("success");
+      setMessage("สมัครสมาชิกเรียบร้อยแล้ว");
+
+      // ไปหน้า Login เพื่อเข้าสู่ระบบด้วยตนเอง
+      router.replace("/login?registered=1");
+
+    } catch (error) {
+      console.error("Register error:", error);
+
+      setMessageType("error");
+
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "สมัครสมาชิกไม่สำเร็จ กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่"
+      );
+
     } finally {
       setLoading(false);
     }
   }
 
+  // ---------------------------------
+  // Register UI
+  // ---------------------------------
+
   return (
     <main className="flex min-h-screen items-center justify-center bg-slate-50 px-4 py-10">
       <div className="w-full max-w-md">
+
         {/* Logo */}
         <Link
           href="/"
@@ -169,23 +192,34 @@ export default function RegisterPage() {
           </div>
 
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">StudyMate</h1>
-            <p className="text-sm text-gray-500">Your study companion</p>
+            <h1 className="text-2xl font-bold text-gray-900">
+              StudyMate
+            </h1>
+
+            <p className="text-sm text-gray-500">
+              Your study companion
+            </p>
           </div>
         </Link>
 
         {/* Register Card */}
         <section className="rounded-3xl border border-gray-100 bg-white p-6 shadow-xl shadow-gray-200/50 sm:p-8">
+
           <div className="mb-7 text-center">
             <h2 className="text-2xl font-bold text-gray-900">
               สร้างบัญชีใหม่
             </h2>
+
             <p className="mt-2 text-sm text-gray-500">
               เริ่มวางแผนการเรียนของคุณไปด้วยกัน
             </p>
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form
+            onSubmit={handleSubmit}
+            className="space-y-4"
+          >
+
             {/* Name */}
             <div>
               <label
@@ -200,6 +234,7 @@ export default function RegisterPage() {
                   size={19}
                   className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400"
                 />
+
                 <input
                   id="name"
                   name="name"
@@ -227,6 +262,7 @@ export default function RegisterPage() {
                   size={19}
                   className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400"
                 />
+
                 <input
                   id="email"
                   name="email"
@@ -253,6 +289,7 @@ export default function RegisterPage() {
                   size={19}
                   className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400"
                 />
+
                 <input
                   id="password"
                   name="password"
@@ -263,13 +300,24 @@ export default function RegisterPage() {
                   required
                   className="w-full rounded-xl border border-gray-200 bg-white py-3 pl-11 pr-12 text-sm text-gray-800 outline-none transition placeholder:text-gray-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
                 />
+
                 <button
                   type="button"
-                  onClick={() => setShowPassword((current) => !current)}
-                  aria-label={showPassword ? "ซ่อนรหัสผ่าน" : "แสดงรหัสผ่าน"}
+                  onClick={() =>
+                    setShowPassword((current) => !current)
+                  }
+                  aria-label={
+                    showPassword
+                      ? "ซ่อนรหัสผ่าน"
+                      : "แสดงรหัสผ่าน"
+                  }
                   className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
                 >
-                  {showPassword ? <EyeOff size={19} /> : <Eye size={19} />}
+                  {showPassword ? (
+                    <EyeOff size={19} />
+                  ) : (
+                    <Eye size={19} />
+                  )}
                 </button>
               </div>
             </div>
@@ -288,20 +336,26 @@ export default function RegisterPage() {
                   size={19}
                   className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400"
                 />
+
                 <input
                   id="confirmPassword"
                   name="confirmPassword"
-                  type={showConfirmPassword ? "text" : "password"}
+                  type={
+                    showConfirmPassword ? "text" : "password"
+                  }
                   placeholder="กรอกรหัสผ่านอีกครั้ง"
                   autoComplete="new-password"
                   minLength={6}
                   required
                   className="w-full rounded-xl border border-gray-200 bg-white py-3 pl-11 pr-12 text-sm text-gray-800 outline-none transition placeholder:text-gray-400 focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
                 />
+
                 <button
                   type="button"
                   onClick={() =>
-                    setShowConfirmPassword((current) => !current)
+                    setShowConfirmPassword(
+                      (current) => !current
+                    )
                   }
                   aria-label={
                     showConfirmPassword
@@ -310,7 +364,11 @@ export default function RegisterPage() {
                   }
                   className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
                 >
-                  {showConfirmPassword ? <EyeOff size={19} /> : <Eye size={19} />}
+                  {showConfirmPassword ? (
+                    <EyeOff size={19} />
+                  ) : (
+                    <Eye size={19} />
+                  )}
                 </button>
               </div>
             </div>
@@ -321,12 +379,19 @@ export default function RegisterPage() {
               disabled={loading}
               className="w-full rounded-xl bg-blue-600 py-3.5 text-sm font-semibold text-white shadow-lg shadow-blue-200 transition hover:bg-blue-700 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {loading ? "กำลังสมัครสมาชิก..." : "สมัครสมาชิก"}
+              {loading
+                ? "กำลังสมัครสมาชิก..."
+                : "สมัครสมาชิก"}
             </button>
 
+            {/* Success / Error Message */}
             {message && (
               <p
-                role={messageType === "error" ? "alert" : "status"}
+                role={
+                  messageType === "error"
+                    ? "alert"
+                    : "status"
+                }
                 className={`rounded-xl p-3 text-sm leading-6 ${
                   messageType === "error"
                     ? "bg-red-50 text-red-700"
@@ -336,12 +401,14 @@ export default function RegisterPage() {
                 {message}
               </p>
             )}
+
           </form>
 
           <div className="my-6 border-t border-gray-100" />
 
           <p className="text-center text-sm text-gray-500">
             มีบัญชีอยู่แล้ว?{" "}
+
             <Link
               href="/login"
               className="font-semibold text-blue-600 hover:text-blue-700"
@@ -349,11 +416,13 @@ export default function RegisterPage() {
               เข้าสู่ระบบ
             </Link>
           </p>
+
         </section>
 
         <p className="mt-6 text-center text-xs text-gray-400">
           จัดการทุกงานเรียนได้ง่ายขึ้นด้วย StudyMate
         </p>
+
       </div>
     </main>
   );
